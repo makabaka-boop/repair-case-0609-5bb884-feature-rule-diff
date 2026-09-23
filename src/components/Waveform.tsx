@@ -1,5 +1,10 @@
 import { useEffect, useRef } from 'react';
 import type { ClipSegment } from '../audio/types';
+import {
+  DIFF_BASELINE_ONLY,
+  DIFF_BOTH,
+  DIFF_CANDIDATE_ONLY
+} from '../audio/compare';
 import type { ViewRange } from '../audio/view-range';
 
 interface WaveformProps {
@@ -9,14 +14,25 @@ interface WaveformProps {
   positionSeconds: number;
   /** 页面统一的视图状态：整轨或局部起止秒数 */
   viewRange: ViewRange;
+  /** 候选规则比较的逐帧差异标记（与差异表共用同一比较结果）；未启用比较时为 null */
+  diffMask?: Uint8Array | null;
   onSeek: (seconds: number) => void;
 }
+
+/** 差异标记对应的画布着色（与图例一致） */
+const DIFF_FILL: Record<number, string> = {
+  [DIFF_BASELINE_ONLY]: 'rgba(255,176,32,0.55)',
+  [DIFF_CANDIDATE_ONLY]: 'rgba(178,132,255,0.55)',
+  [DIFF_BOTH]: 'rgba(56,211,159,0.5)'
+};
 
 /**
  * 声道波形（Canvas 2D）：
  * - 仅绘制 viewRange 指定的起止秒数（整轨或局部视窗）；
  * - 每个像素列取该采样区间的 min/max 包络，支持长录音整轨显示；
- * - 削波段以红色底纹 + 描边高亮（仅与视窗重叠部分）；
+ * - 削波段以红色底纹 + 描边高亮（仅与视窗重叠部分），该基线红层始终保留；
+ * - 启用候选规则比较时，按逐帧差异标记数组叠加着色
+ *   （仅基线=琥珀、仅候选=紫、两者共有=绿）；
  * - 点击波形按视窗横轴比例换算定位时刻。
  */
 export default function Waveform({
@@ -25,6 +41,7 @@ export default function Waveform({
   segments,
   positionSeconds,
   viewRange,
+  diffMask = null,
   onSeek
 }: WaveformProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -70,27 +87,7 @@ export default function Waveform({
       const xForTime = (t: number) =>
         span <= 0 ? 0 : ((t - startSec) / span) * cssWidth;
 
-      // 与视窗重叠的削波段
-      const visible = segments
-        .map((seg) => ({
-          start: Math.max(seg.startSeconds, startSec),
-          end: Math.min(seg.endSeconds, endSec),
-          seg
-        }))
-        .filter((s) => s.end > s.start);
-
-      // 削波高亮：红色全高底纹 + 红色包络
-      for (const s of visible) {
-        const x0 = xForTime(s.start);
-        const x1 = Math.max(x0 + 1, xForTime(s.end));
-        ctx.fillStyle = 'rgba(255,77,79,0.22)';
-        ctx.fillRect(x0, 0, x1 - x0, cssHeight);
-      }
-
-      // 波形包络：视窗起止秒数换算到采样帧区间
-      ctx.strokeStyle = '#6ea8fe';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
+      // 视窗起止秒数换算到采样帧区间（包络与差异着色共用）
       const n = data.length;
       const firstFrame = Math.max(
         0,
@@ -101,6 +98,55 @@ export default function Waveform({
         Math.min(n, Math.ceil(endSec * sampleRate))
       );
       const frameSpan = Math.max(1, lastFrame - firstFrame);
+
+      // 与视窗重叠的削波段
+      const visible = segments
+        .map((seg) => ({
+          start: Math.max(seg.startSeconds, startSec),
+          end: Math.min(seg.endSeconds, endSec),
+          seg
+        }))
+        .filter((s) => s.end > s.start);
+
+      // 削波高亮：红色全高底纹 + 红色包络（基线红层，启用比较后仍保留）
+      for (const s of visible) {
+        const x0 = xForTime(s.start);
+        const x1 = Math.max(x0 + 1, xForTime(s.end));
+        ctx.fillStyle = 'rgba(255,77,79,0.22)';
+        ctx.fillRect(x0, 0, x1 - x0, cssHeight);
+      }
+
+      // 候选规则比较：按逐帧差异标记数组着色（与差异表同一份数据）
+      if (diffMask !== null && diffMask.length > 0) {
+        for (let x = 0; x < cssWidth; x++) {
+          const start = firstFrame + Math.floor((x / cssWidth) * frameSpan);
+          const end = Math.max(
+            start + 1,
+            firstFrame + Math.ceil(((x + 1) / cssWidth) * frameSpan)
+          );
+          let mark = 0;
+          for (let i = start; i < end && i < diffMask.length; i++) {
+            const m = diffMask[i]!;
+            if (m !== 0) {
+              // 同列多种标记时优先显示“仅候选/仅基线”的差异色
+              if (mark === 0) mark = m;
+              else if (mark !== m && (m === DIFF_CANDIDATE_ONLY || m === DIFF_BASELINE_ONLY)) {
+                mark = m;
+              }
+            }
+          }
+          if (mark === 0) continue;
+          const fill = DIFF_FILL[mark];
+          if (fill === undefined) continue;
+          ctx.fillStyle = fill;
+          ctx.fillRect(x, 0, 1, cssHeight);
+        }
+      }
+
+      // 波形包络：视窗起止秒数换算到采样帧区间
+      ctx.strokeStyle = '#6ea8fe';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
       for (let x = 0; x < cssWidth; x++) {
         const start = firstFrame + Math.floor((x / cssWidth) * frameSpan);
         const end = Math.max(
@@ -156,7 +202,7 @@ export default function Waveform({
     const observer = new ResizeObserver(draw);
     observer.observe(wrap);
     return () => observer.disconnect();
-  }, [data, sampleRate, segments, positionSeconds, startSec, span, duration]);
+  }, [data, sampleRate, segments, positionSeconds, startSec, span, duration, diffMask]);
 
   const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;

@@ -334,3 +334,118 @@ audio {
 .loading {
   color: var(--muted);
 }
+
+/* ---- 候选规则比较 ---- */
+
+.compare-panel .compare-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 14px;
+  margin-bottom: 12px;
+}
+
+.compare-panel .compare-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.compare-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.compare-controls label {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.compare-controls input[type='text'] {
+  width: 76px;
+  padding: 6px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.compare-controls input[type='text']:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.compare-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.compare-col {
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.compare-col .metric-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.compare-col .metric-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.compare-col .verdict {
+  font-size: 13px;
+  padding: 4px 12px;
+}
+
+.channel-stat.candidate-stat {
+  color: var(--muted);
+}
+
+.channel-stat.candidate-stat.clip-candidate {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.diff-title {
+  margin: 16px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.diff-kind {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.diff-kind-baseline-only {
+  color: #2a1c00;
+  background: var(--warn);
+}
+
+.diff-kind-candidate-only {
+  color: #1d1033;
+  background: #b284ff;
+}
+
+.diff-kind-both {
+  color: #062018;
+  background: var(--ok);
+}

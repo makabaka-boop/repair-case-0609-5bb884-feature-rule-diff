@@ -1,6 +1,18 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { loadAndScanWav, type LoadedWav } from './audio/decoder';
-import { ERROR_MESSAGES, WavError, type ClipSegment } from './audio/types';
+import {
+  ERROR_MESSAGES,
+  WavError,
+  type ClipSegment,
+  type DiffFragment,
+  type RuleComparison
+} from './audio/types';
+import {
+  buildDiffMask,
+  buildRuleComparison,
+  parseCandidateRule
+} from './audio/compare';
+import { BASELINE_RULE } from './audio/scanner';
 import {
   INVALID_WINDOW_NOTICE,
   SHORT_RECORDING_NOTICE,
@@ -11,6 +23,7 @@ import {
 } from './audio/view-range';
 import Waveform from './components/Waveform';
 import SegmentList from './components/SegmentList';
+import DiffTable from './components/DiffTable';
 
 type Status = 'idle' | 'loading' | 'error' | 'done';
 
@@ -34,6 +47,13 @@ function formatSeconds(totalSeconds: number): string {
 
 const DEFAULT_WINDOW_INPUT = '10';
 
+/** 候选规则输入框默认值（与基线一致，便于在此基础上微调） */
+const DEFAULT_RULE_INPUTS = {
+  threshold: String(BASELINE_RULE.threshold),
+  minRunFrames: String(BASELINE_RULE.minRunFrames),
+  maxMergeGap: String(BASELINE_RULE.maxMergeGap)
+};
+
 export default function App() {
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<ErrorState | null>(null);
@@ -47,6 +67,10 @@ export default function App() {
   );
   const [windowError, setWindowError] = useState<string | null>(null);
   const [viewNotice, setViewNotice] = useState<string | null>(null);
+  // 候选规则比较：输入框、就地提示、当前生效的比较结果（null = 未启用比较）
+  const [ruleInputs, setRuleInputs] = useState(DEFAULT_RULE_INPUTS);
+  const [ruleError, setRuleError] = useState<string | null>(null);
+  const [comparison, setComparison] = useState<RuleComparison | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
 
@@ -60,6 +84,11 @@ export default function App() {
     if (!file) return;
     setStatus('loading');
     setError(null);
+    // 新文件载入（无论最终成功或解码失败）都必须清空旧比较，
+    // 避免上一文件的候选结论串到新文件
+    setComparison(null);
+    setRuleError(null);
+    setRuleInputs(DEFAULT_RULE_INPUTS);
     try {
       const next = await loadAndScanWav(file);
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
@@ -154,6 +183,41 @@ export default function App() {
     if (!loaded) return;
     setViewRange(fullTrackRange(loaded.result.durationSeconds));
     setViewNotice(null);
+  };
+
+  /**
+   * 应用候选规则：非法输入就地提示并保留上一次有效比较；
+   * 合法时基于已解码 PCM 同步算出完整比较结果并单次提交，
+   * 结论、差异表与波形着色共用同一对象，不存在列表已更新而波形仍用旧结果的中间态。
+   */
+  const applyRule = () => {
+    if (!loaded) return;
+    const parsed = parseCandidateRule(ruleInputs);
+    if (!parsed.ok) {
+      setRuleError(parsed.error);
+      return;
+    }
+    setRuleError(null);
+    setComparison(buildRuleComparison(loaded.result, parsed.rule));
+  };
+
+  const clearRule = () => {
+    setComparison(null);
+    setRuleError(null);
+  };
+
+  // 波形着色用的逐帧差异标记：与差异表同源（同一 comparison 对象派生）
+  const diffMasks = useMemo(() => {
+    if (comparison === null) return null;
+    return comparison.channels.map((ch) =>
+      buildDiffMask(ch.fragments, ch.candidate.frameCount)
+    );
+  }, [comparison]);
+
+  const locateFragment = (frag: DiffFragment) => {
+    // 与区间行定位一致：播放器跳到片段起点，各声道同步切局部视窗
+    seekTo(frag.startSeconds);
+    focusLocalView(frag.startSeconds, windowSeconds);
   };
 
   const isFullTrack =
@@ -325,49 +389,201 @@ export default function App() {
             )}
           </section>
 
-          {loaded.result.channels.map((ch) => (
-            <section
-              className="channel-card"
-              key={ch.channel}
-              data-testid="channel-card"
-              data-channel={ch.channel}
-            >
-              <div className="channel-head">
-                <h3>{channelLabel(ch.channel, loaded.result.channels.length)}</h3>
-                <span
-                  className={`channel-stat ${ch.segments.length > 0 ? 'clip-present' : ''}`}
-                  data-testid="channel-stat"
-                >
-                  {ch.segments.length === 0
-                    ? '无削波段'
-                    : `${ch.segments.length} 段 · 合计 ${ch.totalClipMs} ms`}
-                </span>
-              </div>
-              <Waveform
-                data={loaded.result.channelData[ch.channel]!}
-                sampleRate={loaded.result.sampleRate}
-                segments={ch.segments}
-                positionSeconds={position}
-                viewRange={viewRange}
-                onSeek={seekTo}
+          <section className="panel compare-panel" data-testid="compare-panel">
+            <div className="compare-head">
+              <h3>候选规则比较</h3>
+              <span className="privacy-note">
+                基线放行结论（0.999 · 连续 3 帧 · 间隔 2
+                帧）保持不变；候选扫描复用已解码 PCM，不重复读取文件。
+              </span>
+            </div>
+            <div className="compare-controls">
+              <label htmlFor="rule-threshold">阈值：</label>
+              <input
+                id="rule-threshold"
+                data-testid="rule-threshold"
+                type="text"
+                inputMode="decimal"
+                value={ruleInputs.threshold}
+                onChange={(e) => {
+                  setRuleInputs({ ...ruleInputs, threshold: e.target.value });
+                  setRuleError(null);
+                }}
               />
-              <div className="legend">
-                <span>
-                  <span className="swatch" style={{ background: '#6ea8fe' }} />
-                  波形
-                </span>
-                <span>
-                  <span className="swatch" style={{ background: 'rgba(255,77,79,0.5)' }} />
-                  削波高亮
-                </span>
-                <span>
-                  <span className="swatch" style={{ background: '#ffd34d' }} />
-                  当前播放位置
-                </span>
+              <label htmlFor="rule-min-run">最短连续帧数：</label>
+              <input
+                id="rule-min-run"
+                data-testid="rule-min-run"
+                type="text"
+                inputMode="numeric"
+                value={ruleInputs.minRunFrames}
+                onChange={(e) => {
+                  setRuleInputs({ ...ruleInputs, minRunFrames: e.target.value });
+                  setRuleError(null);
+                }}
+              />
+              <label htmlFor="rule-merge-gap">合并间隔（帧）：</label>
+              <input
+                id="rule-merge-gap"
+                data-testid="rule-merge-gap"
+                type="text"
+                inputMode="numeric"
+                value={ruleInputs.maxMergeGap}
+                onChange={(e) => {
+                  setRuleInputs({ ...ruleInputs, maxMergeGap: e.target.value });
+                  setRuleError(null);
+                }}
+              />
+              <button className="primary" onClick={applyRule} data-testid="apply-rule">
+                应用比较
+              </button>
+              {comparison && (
+                <button onClick={clearRule} data-testid="clear-rule">
+                  清除比较
+                </button>
+              )}
+            </div>
+            {ruleError && (
+              <div className="view-error" data-testid="rule-error">
+                {ruleError}
               </div>
-              <SegmentList segments={ch.segments} onLocate={locateSegment} />
-            </section>
-          ))}
+            )}
+            {comparison && (
+              <div className="compare-grid" data-testid="compare-result">
+                <div className="compare-col">
+                  <span className="metric-label">
+                    基线（0.999 · 3 帧 · 间隔 2）
+                  </span>
+                  <span
+                    className={`verdict ${loaded.result.hasClip ? 'fail' : 'pass'}`}
+                    data-testid="compare-baseline-verdict"
+                  >
+                    {loaded.result.hasClip ? '需重采' : '可交付'}
+                  </span>
+                  <span className="metric-value" data-testid="compare-baseline-count">
+                    {comparison.baselineSegmentCount} 段 ·{' '}
+                    {loaded.result.totalClipMs} ms
+                  </span>
+                </div>
+                <div className="compare-col">
+                  <span className="metric-label" data-testid="compare-candidate-rule">
+                    候选（{comparison.rule.threshold} ·{' '}
+                    {comparison.rule.minRunFrames} 帧 · 间隔{' '}
+                    {comparison.rule.maxMergeGap}）
+                  </span>
+                  <span
+                    className={`verdict ${comparison.candidateHasClip ? 'fail' : 'pass'}`}
+                    data-testid="compare-candidate-verdict"
+                  >
+                    {comparison.candidateHasClip ? '需重采' : '可交付'}
+                  </span>
+                  <span className="metric-value" data-testid="compare-candidate-count">
+                    {comparison.candidateSegmentCount} 段 ·{' '}
+                    {comparison.candidateTotalClipMs} ms
+                  </span>
+                </div>
+                <div className="compare-col">
+                  <span className="metric-label">差异片段（各声道合计）</span>
+                  <span className="metric-value" data-testid="compare-diff-count">
+                    {comparison.fragmentCount} 段
+                  </span>
+                  <span className="privacy-note" data-testid="compare-diff-summary">
+                    仅基线 {comparison.baselineOnlyCount} · 仅候选{' '}
+                    {comparison.candidateOnlyCount} · 两者共有 {comparison.bothCount}
+                  </span>
+                </div>
+              </div>
+            )}
+          </section>
+
+          {loaded.result.channels.map((ch) => {
+            const cmp = comparison?.channels[ch.channel];
+            return (
+              <section
+                className="channel-card"
+                key={ch.channel}
+                data-testid="channel-card"
+                data-channel={ch.channel}
+              >
+                <div className="channel-head">
+                  <h3>{channelLabel(ch.channel, loaded.result.channels.length)}</h3>
+                  <span
+                    className={`channel-stat ${ch.segments.length > 0 ? 'clip-present' : ''}`}
+                    data-testid="channel-stat"
+                  >
+                    {ch.segments.length === 0
+                      ? '无削波段'
+                      : `${ch.segments.length} 段 · 合计 ${ch.totalClipMs} ms`}
+                  </span>
+                  {cmp && (
+                    <span
+                      className={`channel-stat candidate-stat ${cmp.candidate.segments.length > 0 ? 'clip-candidate' : ''}`}
+                      data-testid="candidate-stat"
+                    >
+                      {cmp.candidate.segments.length === 0
+                        ? '候选：无削波段'
+                        : `候选：${cmp.candidate.segments.length} 段 · 合计 ${cmp.candidate.totalClipMs} ms`}
+                    </span>
+                  )}
+                </div>
+                <Waveform
+                  data={loaded.result.channelData[ch.channel]!}
+                  sampleRate={loaded.result.sampleRate}
+                  segments={ch.segments}
+                  positionSeconds={position}
+                  viewRange={viewRange}
+                  diffMask={diffMasks?.[ch.channel] ?? null}
+                  onSeek={seekTo}
+                />
+                <div className="legend">
+                  <span>
+                    <span className="swatch" style={{ background: '#6ea8fe' }} />
+                    波形
+                  </span>
+                  <span>
+                    <span className="swatch" style={{ background: 'rgba(255,77,79,0.5)' }} />
+                    削波高亮
+                  </span>
+                  <span>
+                    <span className="swatch" style={{ background: '#ffd34d' }} />
+                    当前播放位置
+                  </span>
+                  {comparison && (
+                    <>
+                      <span>
+                        <span
+                          className="swatch"
+                          style={{ background: 'rgba(255,176,32,0.55)' }}
+                        />
+                        仅基线
+                      </span>
+                      <span>
+                        <span
+                          className="swatch"
+                          style={{ background: 'rgba(178,132,255,0.55)' }}
+                        />
+                        仅候选
+                      </span>
+                      <span>
+                        <span
+                          className="swatch"
+                          style={{ background: 'rgba(56,211,159,0.5)' }}
+                        />
+                        两者共有
+                      </span>
+                    </>
+                  )}
+                </div>
+                <SegmentList segments={ch.segments} onLocate={locateSegment} />
+                {cmp && (
+                  <>
+                    <h4 className="diff-title">差异片段（基线 vs 候选）</h4>
+                    <DiffTable fragments={cmp.fragments} onLocate={locateFragment} />
+                  </>
+                )}
+              </section>
+            );
+          })}
         </>
       )}
     </div>
