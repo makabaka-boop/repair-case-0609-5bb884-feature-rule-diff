@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { loadAndScanWav, type LoadedWav } from './audio/decoder';
-import { ERROR_MESSAGES, WavError, type ClipSegment } from './audio/types';
+import { ERROR_MESSAGES, WavError } from './audio/types';
+import {
+  INVALID_RULE_NOTICE,
+  buildComparison,
+  parseCandidateRule,
+  type RuleComparison
+} from './audio/compare';
 import {
   INVALID_WINDOW_NOTICE,
   SHORT_RECORDING_NOTICE,
@@ -9,8 +15,9 @@ import {
   parseWindowSeconds,
   type ViewRange
 } from './audio/view-range';
-import Waveform from './components/Waveform';
+import Waveform, { DIFF_STRIPE_COLORS } from './components/Waveform';
 import SegmentList from './components/SegmentList';
+import DiffList from './components/DiffList';
 
 type Status = 'idle' | 'loading' | 'error' | 'done';
 
@@ -34,6 +41,13 @@ function formatSeconds(totalSeconds: number): string {
 
 const DEFAULT_WINDOW_INPUT = '10';
 
+/** 候选规则输入默认值：与基线一致（0.999 / 3 帧 / 2 帧） */
+const DEFAULT_RULE_INPUTS = {
+  threshold: '0.999',
+  minRunFrames: '3',
+  maxMergeGap: '2'
+};
+
 export default function App() {
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<ErrorState | null>(null);
@@ -47,6 +61,11 @@ export default function App() {
   );
   const [windowError, setWindowError] = useState<string | null>(null);
   const [viewNotice, setViewNotice] = useState<string | null>(null);
+  // 候选规则比较：扫描结果、差异表与 Canvas 共用同一 comparison 对象，
+  // 单次 setState 原子生效，不会出现列表已更新而波形仍用旧结果的中间态
+  const [ruleInputs, setRuleInputs] = useState(DEFAULT_RULE_INPUTS);
+  const [ruleError, setRuleError] = useState<string | null>(null);
+  const [comparison, setComparison] = useState<RuleComparison | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
 
@@ -72,6 +91,10 @@ export default function App() {
       setWindowSeconds(Number(DEFAULT_WINDOW_INPUT));
       setWindowError(null);
       setViewNotice(null);
+      // 新文件载入：旧比较基于旧 PCM，必须清空
+      setComparison(null);
+      setRuleInputs(DEFAULT_RULE_INPUTS);
+      setRuleError(null);
       setStatus('done');
     } catch (err) {
       if (err instanceof WavError) {
@@ -89,6 +112,9 @@ export default function App() {
         });
       }
       setLoaded(null);
+      // 解码失败：清空旧比较，避免残留基于其他文件的结论
+      setComparison(null);
+      setRuleError(null);
       setStatus('error');
     }
   };
@@ -123,7 +149,7 @@ export default function App() {
     }
   };
 
-  const locateSegment = (seg: ClipSegment) => {
+  const locateSegment = (seg: { startSeconds: number }) => {
     // 播放器仍跳到段起点，同时各声道同步显示该时刻附近的局部波形
     seekTo(seg.startSeconds);
     focusLocalView(seg.startSeconds, windowSeconds);
@@ -133,6 +159,26 @@ export default function App() {
     if (loaded?.result.firstClip) {
       locateSegment(loaded.result.firstClip.segment);
     }
+  };
+
+  /**
+   * 应用候选规则：非法输入就地提示并保留上一次有效比较；
+   * 合法输入一次性算出完整比较结果（扫描 + 差异），单次 setState 生效。
+   */
+  const applyRule = () => {
+    if (!loaded) return;
+    const rule = parseCandidateRule(ruleInputs);
+    if (rule === null) {
+      setRuleError(INVALID_RULE_NOTICE);
+      return;
+    }
+    setRuleError(null);
+    setComparison(buildComparison(loaded.result, rule));
+  };
+
+  const clearComparison = () => {
+    setComparison(null);
+    setRuleError(null);
   };
 
   const applyWindow = () => {
@@ -325,6 +371,110 @@ export default function App() {
             )}
           </section>
 
+          <section className="panel compare-panel" data-testid="compare-panel">
+            <h2 className="compare-title">候选规则比较（不影响上方基线结论）</h2>
+            <div className="compare-controls">
+              <label htmlFor="rule-threshold">阈值：</label>
+              <input
+                id="rule-threshold"
+                data-testid="rule-threshold"
+                type="text"
+                inputMode="decimal"
+                value={ruleInputs.threshold}
+                onChange={(e) => {
+                  setRuleInputs({ ...ruleInputs, threshold: e.target.value });
+                  setRuleError(null);
+                }}
+              />
+              <label htmlFor="rule-min-run">最短连续帧：</label>
+              <input
+                id="rule-min-run"
+                data-testid="rule-min-run"
+                type="text"
+                inputMode="numeric"
+                value={ruleInputs.minRunFrames}
+                onChange={(e) => {
+                  setRuleInputs({ ...ruleInputs, minRunFrames: e.target.value });
+                  setRuleError(null);
+                }}
+              />
+              <label htmlFor="rule-max-gap">合并间隔（帧）：</label>
+              <input
+                id="rule-max-gap"
+                data-testid="rule-max-gap"
+                type="text"
+                inputMode="numeric"
+                value={ruleInputs.maxMergeGap}
+                onChange={(e) => {
+                  setRuleInputs({ ...ruleInputs, maxMergeGap: e.target.value });
+                  setRuleError(null);
+                }}
+              />
+              <button onClick={applyRule} data-testid="apply-rule">
+                应用候选规则
+              </button>
+              {comparison && (
+                <button onClick={clearComparison} data-testid="clear-comparison">
+                  关闭比较
+                </button>
+              )}
+            </div>
+            {ruleError && (
+              <div className="view-error" data-testid="rule-error">
+                {ruleError}
+              </div>
+            )}
+            {comparison && (
+              <div className="compare-summary" data-testid="compare-summary">
+                <div className="compare-verdicts">
+                  <span className="compare-verdict-item">
+                    基线（0.999 / 3 帧 / 2 帧）：
+                    <span
+                      className={`verdict ${loaded.result.hasClip ? 'fail' : 'pass'}`}
+                      data-testid="baseline-verdict"
+                    >
+                      {loaded.result.hasClip ? '需重采' : '可交付'}
+                    </span>
+                    <span className="compare-count" data-testid="baseline-count">
+                      {loaded.result.channels.reduce(
+                        (n, ch) => n + ch.segments.length,
+                        0
+                      )}{' '}
+                      段
+                    </span>
+                  </span>
+                  <span className="compare-verdict-item">
+                    候选（{comparison.rule.threshold} /{' '}
+                    {comparison.rule.minRunFrames} 帧 /{' '}
+                    {comparison.rule.maxMergeGap} 帧）：
+                    <span
+                      className={`verdict ${comparison.candidate.hasClip ? 'fail' : 'pass'}`}
+                      data-testid="candidate-verdict"
+                    >
+                      {comparison.candidate.hasClip ? '需重采' : '可交付'}
+                    </span>
+                    <span className="compare-count" data-testid="candidate-count">
+                      {comparison.candidate.channels.reduce(
+                        (n, ch) => n + ch.segments.length,
+                        0
+                      )}{' '}
+                      段
+                    </span>
+                  </span>
+                </div>
+                <div className="diff-summary" data-testid="diff-summary">
+                  差异片段：新增 {comparison.candidateOnlyCount} · 漏掉{' '}
+                  {comparison.baselineOnlyCount} · 共有 {comparison.bothCount}
+                </div>
+                {!comparison.hasDifference && (
+                  <div className="view-notice" data-testid="no-diff">
+                    候选规则与基线扫描结果一致，无新增或漏掉的削波区间
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
           {loaded.result.channels.map((ch) => (
             <section
               className="channel-card"
@@ -350,6 +500,7 @@ export default function App() {
                 positionSeconds={position}
                 viewRange={viewRange}
                 onSeek={seekTo}
+                diffs={comparison?.channels[ch.channel]?.segments}
               />
               <div className="legend">
                 <span>
@@ -364,8 +515,46 @@ export default function App() {
                   <span className="swatch" style={{ background: '#ffd34d' }} />
                   当前播放位置
                 </span>
+                {comparison && (
+                  <>
+                    <span>
+                      <span
+                        className="swatch"
+                        style={{ background: DIFF_STRIPE_COLORS.BASELINE_ONLY }}
+                      />
+                      仅基线（新规则漏掉）
+                    </span>
+                    <span>
+                      <span
+                        className="swatch"
+                        style={{ background: DIFF_STRIPE_COLORS.CANDIDATE_ONLY }}
+                      />
+                      仅候选（新规则新增）
+                    </span>
+                    <span>
+                      <span
+                        className="swatch"
+                        style={{ background: DIFF_STRIPE_COLORS.BOTH }}
+                      />
+                      两者共有
+                    </span>
+                  </>
+                )}
               </div>
               <SegmentList segments={ch.segments} onLocate={locateSegment} />
+              {comparison && (
+                <div className="diff-section">
+                  <h4>
+                    差异片段（候选{' '}
+                    {comparison.candidate.channels[ch.channel]!.segments.length}{' '}
+                    段 vs 基线 {ch.segments.length} 段）
+                  </h4>
+                  <DiffList
+                    segments={comparison.channels[ch.channel]!.segments}
+                    onLocate={locateSegment}
+                  />
+                </div>
+              )}
             </section>
           ))}
         </>

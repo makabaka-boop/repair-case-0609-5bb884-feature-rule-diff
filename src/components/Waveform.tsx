@@ -1,6 +1,14 @@
 import { useEffect, useRef } from 'react';
 import type { ClipSegment } from '../audio/types';
+import type { DiffMembership, DiffSegment } from '../audio/compare';
 import type { ViewRange } from '../audio/view-range';
+
+/** 差异条着色：与差异表共用同一差异数组的标记 */
+export const DIFF_STRIPE_COLORS: Record<DiffMembership, string> = {
+  BASELINE_ONLY: '#ff7a45',
+  CANDIDATE_ONLY: '#52c41a',
+  BOTH: '#94a3b8'
+};
 
 interface WaveformProps {
   data: Float32Array;
@@ -10,6 +18,8 @@ interface WaveformProps {
   /** 页面统一的视图状态：整轨或局部起止秒数 */
   viewRange: ViewRange;
   onSeek: (seconds: number) => void;
+  /** 候选规则比较的差异片段（与差异表同一数组）；未启用比较时不传 */
+  diffs?: DiffSegment[];
 }
 
 /**
@@ -17,6 +27,7 @@ interface WaveformProps {
  * - 仅绘制 viewRange 指定的起止秒数（整轨或局部视窗）；
  * - 每个像素列取该采样区间的 min/max 包络，支持长录音整轨显示；
  * - 削波段以红色底纹 + 描边高亮（仅与视窗重叠部分）；
+ * - 启用候选规则比较时，底部差异条按同一差异数组逐段着色；
  * - 点击波形按视窗横轴比例换算定位时刻。
  */
 export default function Waveform({
@@ -25,7 +36,8 @@ export default function Waveform({
   segments,
   positionSeconds,
   viewRange,
-  onSeek
+  onSeek,
+  diffs
 }: WaveformProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -140,6 +152,21 @@ export default function Waveform({
       }
       ctx.stroke();
 
+      // 差异条：启用比较时按同一差异数组逐段着色（底部横带）
+      if (diffs && diffs.length > 0) {
+        const stripHeight = 12;
+        const stripTop = cssHeight - stripHeight;
+        for (const d of diffs) {
+          const s = Math.max(d.startSeconds, startSec);
+          const e = Math.min(d.endSeconds, endSec);
+          if (e <= s) continue;
+          const x0 = xForTime(s);
+          const x1 = Math.max(x0 + 1, xForTime(e));
+          ctx.fillStyle = DIFF_STRIPE_COLORS[d.membership];
+          ctx.fillRect(x0, stripTop, x1 - x0, stripHeight);
+        }
+      }
+
       // 播放位置游标（仅当位置落在视窗内）
       if (positionSeconds >= startSec && positionSeconds <= endSec) {
         const px = Math.min(cssWidth - 1, Math.max(0, xForTime(positionSeconds)));
@@ -156,7 +183,7 @@ export default function Waveform({
     const observer = new ResizeObserver(draw);
     observer.observe(wrap);
     return () => observer.disconnect();
-  }, [data, sampleRate, segments, positionSeconds, startSec, span, duration]);
+  }, [data, sampleRate, segments, positionSeconds, startSec, span, duration, diffs]);
 
   const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;

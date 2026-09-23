@@ -334,3 +334,106 @@ audio {
 .loading {
   color: var(--muted);
 }
+
+.compare-panel .compare-title {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+
+.compare-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.compare-controls label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.compare-controls input[type='text'] {
+  width: 76px;
+  padding: 6px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.compare-controls input[type='text']:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.compare-summary {
+  margin-top: 14px;
+}
+
+.compare-verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 32px;
+  align-items: center;
+}
+
+.compare-verdict-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.compare-verdict-item .verdict {
+  font-size: 13px;
+  padding: 5px 14px;
+}
+
+.compare-count {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-summary {
+  margin-top: 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-section {
+  margin-top: 14px;
+}
+
+.diff-section h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.diff-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.diff-badge.diff-baseline-only {
+  color: #2a1404;
+  background: #ff7a45;
+}
+
+.diff-badge.diff-candidate-only {
+  color: #062206;
+  background: #52c41a;
+}
+
+.diff-badge.diff-both {
+  color: #101725;
+  background: #94a3b8;
+}
